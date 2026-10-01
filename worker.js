@@ -1,6 +1,5 @@
 export default {
   async fetch(request, env, ctx) {
-    // 1. Handle CORS preflight options request
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -16,13 +15,61 @@ export default {
       "Access-Control-Allow-Origin": "*",
     };
 
-    // 2. Parse URL and normalize double slashes (e.g. //api -> /api)
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+/g, "/");
 
-    // 3. Silently handle browser favicon requests
     if (pathname === "/favicon.ico") {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    async function callGeminiWithFallback(payload) {
+      const models = [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash"
+      ];
+
+      let lastError = "Gemini API request failed.";
+
+      for (const model of models) {
+        // Standard endpoint with location hints
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+        
+        try {
+          const res = await fetch(geminiUrl, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              // Removes internal proxy forwarding IPs that trigger regional blocking
+              "X-Forwarded-For": "" 
+            },
+            body: JSON.stringify(payload),
+            // Cloudflare Workers fetch configuration option to prefer global edge routing
+            cf: {
+              cacheEverything: false
+            }
+          });
+
+          const data = await res.json();
+
+          if (res.ok) {
+            return { success: true, data };
+          }
+
+          lastError = data.error?.message || `Model ${model} error`;
+          
+          if (res.status === 429 || res.status === 404 || res.status === 503 || res.status === 500 || lastError.includes("not found") || lastError.includes("high demand") || lastError.includes("location")) {
+            console.warn(`Model ${model} returned error (${lastError}). Retrying...`);
+            continue;
+          }
+
+          return { success: false, error: lastError, status: res.status };
+        } catch (err) {
+          lastError = err.message;
+        }
+      }
+
+      return { success: false, error: lastError, status: 503 };
     }
 
     // Route 1: Generate AI Customer Response
@@ -47,10 +94,8 @@ export default {
 
         const { systemPrompt = "", conversationHistory = [], latestAgentMessage = "" } = body;
 
-        // Construct Gemini contents payload
         const contents = [];
 
-        // Map existing transcript history
         if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
           conversationHistory.forEach(msg => {
             contents.push({
@@ -60,13 +105,11 @@ export default {
           });
         }
 
-        // Add latest agent message
         contents.push({
           role: "user",
           parts: [{ text: latestAgentMessage }]
         });
 
-        // Gemini REST API strictly requires contents to start with role: 'user'
         if (contents.length > 0 && contents[0].role === "model") {
           contents.unshift({
             role: "user",
@@ -74,28 +117,22 @@ export default {
           });
         }
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+        const payload = {
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: contents,
+          generationConfig: { temperature: 0.7, maxOutputTokens: 150 }
+        };
 
-        const geminiResponse = await fetch(geminiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents: contents,
-            generationConfig: { temperature: 0.7, maxOutputTokens: 150 }
-          })
-        });
+        const result = await callGeminiWithFallback(payload);
 
-        const data = await geminiResponse.json();
-
-        if (!geminiResponse.ok) {
-          return new Response(JSON.stringify({ error: data.error?.message || "Gemini API request failed." }), {
-            status: geminiResponse.status,
+        if (!result.success) {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: result.status || 500,
             headers: corsHeaders
           });
         }
 
-        const customerReply = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+        const customerReply = result.data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
 
         return new Response(JSON.stringify({ reply: customerReply, response: customerReply }), {
           status: 200,
@@ -149,27 +186,21 @@ TRANSCRIPT:
 ${(transcript || []).map(t => `${t.sender}:${t.text}`).join("\n")}
 `;
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+        const payload = {
+          contents: [{ parts: [{ text: evalPrompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        };
 
-        const geminiResponse = await fetch(geminiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: evalPrompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
-        });
+        const result = await callGeminiWithFallback(payload);
 
-        const evalData = await geminiResponse.json();
-
-        if (!geminiResponse.ok) {
-          return new Response(JSON.stringify({ error: evalData.error?.message || "Gemini API request failed." }), {
-            status: geminiResponse.status,
+        if (!result.success) {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: result.status || 500,
             headers: corsHeaders
           });
         }
 
-        const scorecardJson = evalData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+        const scorecardJson = result.data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
         return new Response(scorecardJson, {
           status: 200,
@@ -183,7 +214,6 @@ ${(transcript || []).map(t => `${t.sender}:${t.text}`).join("\n")}
       }
     }
 
-    // Fallback health check
     return new Response("SimuCall AI Cloudflare Worker Active", {
       status: 200,
       headers: corsHeaders
