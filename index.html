@@ -15,7 +15,7 @@
       <h1 class="text-2xl font-bold text-white tracking-tight">SimuCall AI</h1>
       <span class="text-xs bg-[#FF4F00]/10 text-[#FF4F00] px-3 py-1 rounded-full border border-[#FF4F00]/30 font-mono font-medium">Genesys Cloud Ecosystem</span>
     </div>
-    <span class="text-xs text-slate-400 font-mono">Gemini-Powered Roleplay Simulator</span>
+    <span class="text-xs text-slate-400 font-mono">Web Messaging Integrated Roleplay Simulator</span>
   </header>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -35,11 +35,33 @@
 
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">System Prompt (AI Guardrails)</label>
-          <textarea id="systemPrompt" rows="7" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#FF4F00] leading-relaxed"></textarea>
+          <textarea id="systemPrompt" rows="5" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#FF4F00] leading-relaxed"></textarea>
+        </div>
+
+        <!-- Genesys Web Messaging Deployment Config -->
+        <div class="space-y-3 border-t border-[#283b54] pt-3 mt-3">
+          <label class="block text-xs font-semibold text-slate-200">Genesys Deployment Settings</label>
+          <div>
+            <label class="block text-[10px] text-slate-400 mb-1">Deployment ID</label>
+            <input id="genesysDeploymentId" type="text" placeholder="e.g., xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#FF4F00]" />
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-400 mb-1">Region Domain</label>
+            <select id="genesysRegion" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#FF4F00]">
+              <option value="mypurecloud.com">US East (mypurecloud.com)</option>
+              <option value="usw2.pure.cloud">US West (usw2.pure.cloud)</option>
+              <option value="mypurecloud.ie">EMEA Ireland (mypurecloud.ie)</option>
+              <option value="euw2.pure.cloud">EMEA London (euw2.pure.cloud)</option>
+              <option value="mypurecloud.de">EMEA Frankfurt (mypurecloud.de)</option>
+              <option value="mypurecloud.jp">APAC Tokyo (mypurecloud.jp)</option>
+              <option value="apse1.pure.cloud">APAC Singapore (apse1.pure.cloud)</option>
+              <option value="mypurecloud.com.au">APAC Sydney (mypurecloud.com.au)</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      <button id="startBtn" onclick="startSimulation()" class="w-full bg-[#FF4F00] hover:bg-[#e04500] text-white font-medium py-2.5 rounded-lg text-sm transition shadow-md hover:shadow-lg">
+      <button id="startBtn" onclick="startSimulation()" class="w-full bg-[#FF4F00] hover:bg-[#e04500] text-white font-medium py-2.5 rounded-lg text-sm transition shadow-md hover:shadow-lg mt-4">
         Launch Simulation Session
       </button>
     </div>
@@ -92,6 +114,8 @@
     };
 
     let transcript = [];
+    let socket = null;
+    let sessionToken = null;
 
     function loadPersonaPrompt() {
       const selected = document.getElementById("personaSelect").value;
@@ -108,7 +132,7 @@
       }
 
       const msgElem = document.createElement("div");
-      const isCustomer = sender === "AI Customer";
+      const isCustomer = sender === "AI Customer" || sender === "Genesys Flow / Agent";
       
       msgElem.className = `p-2.5 rounded-lg max-w-[85%] ${isCustomer ? 'bg-[#FF4F00]/15 border border-[#FF4F00]/40 text-orange-100 self-start' : 'bg-[#283b54] text-slate-100 self-end ml-auto'}`;
       msgElem.innerHTML = `<span class="block text-[10px] font-bold ${isCustomer ? 'text-[#FF4F00]' : 'text-slate-400'} mb-0.5">${sender}</span>${text}`;
@@ -119,57 +143,103 @@
     async function startSimulation() {
       document.getElementById("transcriptBox").innerHTML = "";
       transcript = [];
-      document.getElementById("sessionStatus").innerText = "Call Active";
-      document.getElementById("sessionStatus").className = "text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-mono";
 
-      const selected = document.getElementById("personaSelect").value;
-      let initialMsg = "Hello? I need someone to help me right now!";
-      if (selected === "angry_bill") initialMsg = "I just saw my bill and there is an extra $50 charge! Explain this right now!";
-      if (selected === "confused_elder") initialMsg = "Hello? My phone app says 'Token Expired' and I can't see my savings account.";
-      if (selected === "delayed_delivery") initialMsg = "My package #88219 was supposed to arrive 3 days ago. Where is it?";
+      const deploymentId = document.getElementById("genesysDeploymentId").value.trim();
+      const regionDomain = document.getElementById("genesysRegion").value;
 
-      logMessage("AI Customer", initialMsg);
+      if (!deploymentId) {
+        alert("Please enter your Genesys Cloud Web Messaging Deployment ID first.");
+        return;
+      }
+
+      // Generate a unique token for the Guest Web Messaging session
+      sessionToken = "simucall-" + Math.random().toString(36).substring(2, 15);
+
+      document.getElementById("sessionStatus").innerText = "Connecting to Genesys...";
+      document.getElementById("sessionStatus").className = "text-xs bg-amber-950 text-amber-300 border border-amber-800 px-2.5 py-1 rounded-full font-mono";
+
+      // Connect directly to Genesys Web Messaging Guest WebSocket API
+      const wsUrl = `wss://webmessaging.${regionDomain}/v1?deploymentId=${deploymentId}`;
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        // Step 1: Configure Session with Genesys Cloud
+        const configPayload = {
+          action: "configureSession",
+          deploymentId: deploymentId,
+          token: sessionToken
+        };
+        socket.send(JSON.stringify(configPayload));
+      };
+
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        // Session configured successfully
+        if (data.class === "SessionResponse" && data.code === 200) {
+          document.getElementById("sessionStatus").innerText = "Call Active (Genesys Connected)";
+          document.getElementById("sessionStatus").className = "text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-mono";
+
+          // Send initial opening customer message to Genesys
+          const selected = document.getElementById("personaSelect").value;
+          let initialMsg = "Hello? I need someone to help me right now!";
+          if (selected === "angry_bill") initialMsg = "I just saw my bill and there is an extra $50 charge! Explain this right now!";
+          if (selected === "confused_elder") initialMsg = "Hello? My phone app says 'Token Expired' and I can't see my savings account.";
+          if (selected === "delayed_delivery") initialMsg = "My package #88219 was supposed to arrive 3 days ago. Where is it?";
+
+          sendInboundCustomerMessage(initialMsg);
+        }
+
+        // Message received back from Genesys Architect Flow or Live Agent
+        if (data.class === "StructuredMessage" && data.body?.direction === "Outbound") {
+          const replyText = data.body?.text || "[Attachment/Media Received]";
+          logMessage("Genesys Flow / Agent", replyText);
+        }
+      };
+
+      socket.onerror = (err) => {
+        document.getElementById("sessionStatus").innerText = "Connection Failed";
+        document.getElementById("sessionStatus").className = "text-xs bg-red-950 text-red-300 border border-red-800 px-2.5 py-1 rounded-full font-mono";
+      };
+
+      socket.onclose = () => {
+        document.getElementById("sessionStatus").innerText = "Disconnected";
+        document.getElementById("sessionStatus").className = "text-xs bg-[#283b54] text-slate-300 px-2.5 py-1 rounded-full font-mono";
+      };
     }
 
-    async function handleAgentReply() {
+    function sendInboundCustomerMessage(text) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+      logMessage("AI Customer", text);
+
+      // Web Messaging JSON frame payload structure
+      const messagePayload = {
+        action: "onMessage",
+        token: sessionToken,
+        message: {
+          type: "Text",
+          text: text
+        }
+      };
+
+      socket.send(JSON.stringify(messagePayload));
+    }
+
+    function handleAgentReply() {
       const input = document.getElementById("testAgentMsg");
       const text = input.value.trim();
-      if (!text || transcript.length === 0) return;
-      
-      // Save transcript history snapshot BEFORE adding current agent message
-      const historyBeforeReply = [...transcript];
+      if (!text) return;
 
-      logMessage("Trainee Agent", text);
+      sendInboundCustomerMessage(text);
       input.value = "";
-
-      try {
-        const res = await fetch(`${WORKER_URL}/api/generate-response`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemPrompt: document.getElementById("systemPrompt").value,
-            conversationHistory: historyBeforeReply.map(t => ({
-              role: t.sender === "AI Customer" ? "assistant" : "user",
-              content: t.text
-            })),
-            latestAgentMessage: text
-          })
-        });
-
-        const data = await res.json();
-        if (data.reply || data.response) {
-          logMessage("AI Customer", data.reply || data.response);
-        } else if (data.error) {
-          logMessage("AI Customer", `[API Error]: ${data.error}`);
-        } else {
-          logMessage("AI Customer", "I didn't understand that response.");
-        }
-      } catch (err) {
-        logMessage("System Error", "Could not fetch response from Gemini API.");
-      }
     }
 
     async function endSimulation() {
+      if (socket) {
+        socket.close();
+      }
+
       if (transcript.length === 0) return;
 
       document.getElementById("sessionStatus").innerText = "Evaluating...";
