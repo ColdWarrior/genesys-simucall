@@ -132,7 +132,9 @@
       }
 
       const msgElem = document.createElement("div");
-      const isCustomer = sender === "AI Customer" || sender === "Genesys Flow / Agent";
+      
+      // ONLY AI Customer gets left-aligned orange styling. Agents/Flows get right-aligned dark slate styling.
+      const isCustomer = sender === "AI Customer";
       
       msgElem.className = `p-2.5 rounded-lg max-w-[85%] ${isCustomer ? 'bg-[#FF4F00]/15 border border-[#FF4F00]/40 text-orange-100 self-start' : 'bg-[#283b54] text-slate-100 self-end ml-auto'}`;
       msgElem.innerHTML = `<span class="block text-[10px] font-bold ${isCustomer ? 'text-[#FF4F00]' : 'text-slate-400'} mb-0.5">${sender}</span>${text}`;
@@ -152,18 +154,15 @@
         return;
       }
 
-      // Generate a unique token for the Guest Web Messaging session
       sessionToken = "simucall-" + Math.random().toString(36).substring(2, 15);
 
       document.getElementById("sessionStatus").innerText = "Connecting to Genesys...";
       document.getElementById("sessionStatus").className = "text-xs bg-amber-950 text-amber-300 border border-amber-800 px-2.5 py-1 rounded-full font-mono";
 
-      // Connect directly to Genesys Web Messaging Guest WebSocket API
       const wsUrl = `wss://webmessaging.${regionDomain}/v1?deploymentId=${deploymentId}`;
       socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
-        // Step 1: Configure Session with Genesys Cloud
         const configPayload = {
           action: "configureSession",
           deploymentId: deploymentId,
@@ -180,7 +179,6 @@
           document.getElementById("sessionStatus").innerText = "Call Active (Genesys Connected)";
           document.getElementById("sessionStatus").className = "text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-mono";
 
-          // Send initial opening customer message to Genesys
           const selected = document.getElementById("personaSelect").value;
           let initialMsg = "Hello? I need someone to help me right now!";
           if (selected === "angry_bill") initialMsg = "I just saw my bill and there is an extra $50 charge! Explain this right now!";
@@ -190,10 +188,20 @@
           sendInboundCustomerMessage(initialMsg);
         }
 
-        // Message received back from Genesys Architect Flow or Live Agent
+        // Outbound event from Genesys Agent/Flow
         if (data.class === "StructuredMessage" && data.body?.direction === "Outbound") {
-          const replyText = data.body?.text || "[Attachment/Media Received]";
-          logMessage("Genesys Flow / Agent", replyText);
+          // Extract text cleanly across root text or structured content objects
+          let replyText = data.body?.text;
+          
+          if (!replyText && Array.isArray(data.body?.content)) {
+            const textObj = data.body.content.find(c => c.contentType === "Text");
+            if (textObj) replyText = textObj.text?.body || textObj.text;
+          }
+
+          // Ignore duplicate echo frames or empty system events
+          if (replyText) {
+            logMessage("Genesys Flow / Agent", replyText);
+          }
         }
       };
 
@@ -213,7 +221,6 @@
 
       logMessage("AI Customer", text);
 
-      // Web Messaging JSON frame payload structure
       const messagePayload = {
         action: "onMessage",
         token: sessionToken,
