@@ -11,6 +11,7 @@ export default {
     }
 
     const url = new URL(request.url);
+	const pathname = url.pathname.replace(/\/+/g, "/"); // Normalizes "//api" to "/api"
 
     // Endpoint 1: Generate AI Customer Response
     if (url.pathname === "/api/generate-response" && request.method === "POST") {
