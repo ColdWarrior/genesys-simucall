@@ -138,6 +138,9 @@
       const text = input.value.trim();
       if (!text || transcript.length === 0) return;
       
+      // Save current transcript history BEFORE adding the new agent message
+      const historyBeforeReply = [...transcript];
+
       logMessage("Trainee Agent", text);
       input.value = "";
 
@@ -147,7 +150,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             systemPrompt: document.getElementById("systemPrompt").value,
-            conversationHistory: transcript.map(t => ({
+            conversationHistory: historyBeforeReply.map(t => ({
               role: t.sender === "AI Customer" ? "assistant" : "user",
               content: t.text
             })),
@@ -158,6 +161,8 @@
         const data = await res.json();
         if (data.reply) {
           logMessage("AI Customer", data.reply);
+        } else if (data.error) {
+          logMessage("AI Customer", `[Error]: ${data.error}`);
         } else {
           logMessage("AI Customer", "I didn't understand that response.");
         }
