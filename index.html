@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SimuCall AI - Trainer Control Hub</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#0d1424] text-slate-100 min-h-screen p-6 font-sans">
+  <header class="flex justify-between items-center pb-6 border-b border-[#283b54] mb-6">
+    <div class="flex items-center gap-3">
+      <!-- Genesys Orange Logo Badge -->
+      <div class="w-8 h-8 rounded-lg bg-[#FF4F00] flex items-center justify-center font-bold text-white text-lg shadow-lg">G</div>
+      <h1 class="text-2xl font-bold text-white tracking-tight">SimuCall AI</h1>
+      <span class="text-xs bg-[#FF4F00]/10 text-[#FF4F00] px-3 py-1 rounded-full border border-[#FF4F00]/30 font-mono font-medium">Genesys Cloud Ecosystem</span>
+    </div>
+    <span class="text-xs text-slate-400 font-mono">Gemini-Powered Roleplay Simulator</span>
+  </header>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Panel 1: Simulation Setup -->
+    <div class="bg-[#162032] p-5 rounded-xl border border-[#283b54] space-y-4 flex flex-col justify-between shadow-md">
+      <div class="space-y-4">
+        <h2 class="text-lg font-semibold border-b border-[#283b54] pb-2 text-white">1. Simulation Configurator</h2>
+        
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Select Customer Persona Preset</label>
+          <select id="personaSelect" onchange="loadPersonaPrompt()" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-[#FF4F00]">
+            <option value="angry_bill">Angry Customer: Unexpected $50 Charge</option>
+            <option value="confused_elder">Confused Senior: App Login Issues</option>
+            <option value="delayed_delivery">Frustrated Escalation: Late Delivery</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">System Prompt (AI Guardrails)</label>
+          <textarea id="systemPrompt" rows="7" class="w-full bg-[#0d1424] border border-[#283b54] rounded-lg p-2.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#FF4F00] leading-relaxed"></textarea>
+        </div>
+      </div>
+
+      <button id="startBtn" onclick="startSimulation()" class="w-full bg-[#FF4F00] hover:bg-[#e04500] text-white font-medium py-2.5 rounded-lg text-sm transition shadow-md hover:shadow-lg">
+        Launch Simulation Session
+      </button>
+    </div>
+
+    <!-- Panel 2: Live Interaction Stream -->
+    <div class="bg-[#162032] p-5 rounded-xl border border-[#283b54] flex flex-col justify-between shadow-md">
+      <div>
+        <div class="flex justify-between items-center border-b border-[#283b54] pb-2 mb-4">
+          <h2 class="text-lg font-semibold text-white">2. Live Interaction Stream</h2>
+          <span id="sessionStatus" class="text-xs bg-[#283b54] text-slate-300 px-2.5 py-1 rounded-full font-mono">Idle</span>
+        </div>
+
+        <div id="transcriptBox" class="h-80 overflow-y-auto space-y-3 p-3 bg-[#0d1424] rounded-lg border border-[#283b54] text-xs font-mono flex flex-col">
+          <p class="text-slate-500 italic m-auto">Click "Launch Simulation Session" to start...</p>
+        </div>
+      </div>
+
+      <div class="pt-4 border-t border-[#283b54] mt-4 space-y-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Simulate Trainee Agent Reply:</label>
+          <div class="flex gap-2">
+            <input id="testAgentMsg" type="text" placeholder="Type response as agent..." class="flex-1 bg-[#0d1424] border border-[#283b54] rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#FF4F00]" onkeydown="if(event.key==='Enter') handleAgentReply()"/>
+            <button onclick="handleAgentReply()" class="bg-[#283b54] hover:bg-[#344b6a] text-white px-4 py-2 rounded-lg text-xs font-medium transition">Send</button>
+          </div>
+        </div>
+
+        <button onclick="endSimulation()" class="w-full bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/80 py-2 rounded-lg text-xs font-medium transition">
+          End Call & Generate QA Scorecard
+        </button>
+      </div>
+    </div>
+
+    <!-- Panel 3: Automated QA Scorecard -->
+    <div class="bg-[#162032] p-5 rounded-xl border border-[#283b54] space-y-4 shadow-md">
+      <h2 class="text-lg font-semibold border-b border-[#283b54] pb-2 text-white">3. Evaluation Scorecard</h2>
+      
+      <div id="scorecardBox" class="space-y-4">
+        <p class="text-xs text-slate-500 italic">Scores will generate automatically once the simulation ends...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // REPLACE THIS WITH YOUR CLOUDFLARE WORKER URL
+    const WORKER_URL = "https://simucall-worker.<your-subdomain>.workers.dev";
+    
+    const personas = {
+      angry_bill: "You are John, an extremely angry customer calling customer service because your monthly internet bill was charged $50 more than usual. Do not accept excuses easily. Do not provide your security PIN or account number unless the agent explicitly asks for verification first. Keep responses under 3 sentences.",
+      confused_elder: "You are Mary, an 78-year-old customer who cannot log into the mobile application. You are non-technical and get confused easily. Be polite but express frustration if technical jargon is used.",
+      delayed_delivery: "You are David, a customer whose package containing urgent medical supplies is 3 days late. Demand an immediate status or supervisor escalation unless the agent provides clear tracking and empathy."
+    };
+
+    let transcript = [];
+
+    function loadPersonaPrompt() {
+      const selected = document.getElementById("personaSelect").value;
+      document.getElementById("systemPrompt").value = personas[selected];
+    }
+    loadPersonaPrompt();
+
+    function logMessage(sender, text) {
+      transcript.push({ sender, text });
+      const box = document.getElementById("transcriptBox");
+      
+      if (transcript.length === 1) {
+        box.innerHTML = "";
+      }
+
+      const msgElem = document.createElement("div");
+      const isCustomer = sender === "AI Customer";
+      
+      // AI Customer gets Genesys Orange accent background, Agent gets Dark Slate
+      msgElem.className = `p-2.5 rounded-lg max-w-[85%] ${isCustomer ? 'bg-[#FF4F00]/15 border border-[#FF4F00]/40 text-orange-100 self-start' : 'bg-[#283b54] text-slate-100 self-end ml-auto'}`;
+      msgElem.innerHTML = `<span class="block text-[10px] font-bold ${isCustomer ? 'text-[#FF4F00]' : 'text-slate-400'} mb-0.5">${sender}</span>${text}`;
+      box.appendChild(msgElem);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function startSimulation() {
+      document.getElementById("transcriptBox").innerHTML = "";
+      transcript = [];
+      document.getElementById("sessionStatus").innerText = "Call Active";
+      document.getElementById("sessionStatus").className = "text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-mono";
+
+      const selected = document.getElementById("personaSelect").value;
+      let initialMsg = "Hello? I need someone to help me right now!";
+      if (selected === "angry_bill") initialMsg = "I just saw my bill and there is an extra $50 charge! Explain this right now!";
+      if (selected === "confused_elder") initialMsg = "Hello? My phone app says 'Token Expired' and I can't see my savings account.";
+      if (selected === "delayed_delivery") initialMsg = "My package #88219 was supposed to arrive 3 days ago. Where is it?";
+
+      logMessage("AI Customer", initialMsg);
+    }
+
+    async function handleAgentReply() {
+      const input = document.getElementById("testAgentMsg");
+      const text = input.value.trim();
+      if (!text || transcript.length === 0) return;
+      
+      logMessage("Trainee Agent", text);
+      input.value = "";
+
+      try {
+        const res = await fetch(`${WORKER_URL}/api/generate-response`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemPrompt: document.getElementById("systemPrompt").value,
+            conversationHistory: transcript.map(t => ({
+              role: t.sender === "AI Customer" ? "assistant" : "user",
+              content: t.text
+            })),
+            latestAgentMessage: text
+          })
+        });
+
+        const data = await res.json();
+        if (data.reply) {
+          logMessage("AI Customer", data.reply);
+        } else {
+          logMessage("AI Customer", "I didn't understand that response.");
+        }
+      } catch (err) {
+        logMessage("System Error", "Could not fetch response from Gemini API.");
+      }
+    }
+
+    async function endSimulation() {
+      if (transcript.length === 0) return;
+
+      document.getElementById("sessionStatus").innerText = "Evaluating...";
+      document.getElementById("sessionStatus").className = "text-xs bg-amber-950 text-amber-300 border border-amber-800 px-2.5 py-1 rounded-full font-mono";
+      
+      try {
+        const res = await fetch(`${WORKER_URL}/api/evaluate-call`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript })
+        });
+
+        const evalData = await res.json();
+        
+        document.getElementById("sessionStatus").innerText = "Completed";
+        document.getElementById("sessionStatus").className = "text-xs bg-[#283b54] text-slate-300 px-2.5 py-1 rounded-full font-mono";
+
+        document.getElementById("scorecardBox").innerHTML = `
+          <div class="grid grid-cols-3 gap-2 text-center">
+            <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
+              <span class="block text-[10px] text-slate-400 font-mono">EMPATHY</span>
+              <span class="text-xl font-bold text-[#FF4F00]">${evalData.scores.empathy}/5</span>
+            </div>
+            <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
+              <span class="block text-[10px] text-slate-400 font-mono">PROTOCOL</span>
+              <span class="text-xl font-bold text-emerald-400">${evalData.scores.protocol}/5</span>
+            </div>
+            <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
+              <span class="block text-[10px] text-slate-400 font-mono">RESOLUTION</span>
+              <span class="text-xl font-bold text-amber-400">${evalData.scores.resolution}/5</span>
+            </div>
+          </div>
+
+          <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54] text-xs space-y-1">
+            <span class="block font-semibold text-slate-200">Executive Summary:</span>
+            <p class="text-slate-400 leading-relaxed">${evalData.summary}</p>
+          </div>
+
+          <div class="bg-[#FF4F00]/10 p-3 rounded-lg border border-[#FF4F00]/30 text-xs space-y-1">
+            <span class="block font-semibold text-[#FF4F00]">Coaching Tip:</span>
+            <p class="text-orange-200 leading-relaxed">${evalData.coaching_tip}</p>
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById("sessionStatus").innerText = "Error";
+        document.getElementById("scorecardBox").innerHTML = `<p class="text-xs text-red-400">Failed to generate scorecard. Verify Cloudflare Worker connection.</p>`;
+      }
+    }
+  </script>
+</body>
+</html>
