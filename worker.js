@@ -12,7 +12,11 @@ export default {
 
     const url = new URL(request.url);
 	const pathname = url.pathname.replace(/\/+/g, "/"); // Normalizes "//api" to "/api"
-
+	
+	if (pathname === "/favicon.ico") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+	
     // Endpoint 1: Generate AI Customer Response
     if (pathname === "/api/generate-response" && request.method === "POST") {
       try {
