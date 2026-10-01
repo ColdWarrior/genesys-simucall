@@ -171,10 +171,10 @@
         socket.send(JSON.stringify(configPayload));
       };
 
-      socket.onmessage = (event) => {
+      socket.onmessage = async (event) => {
         const data = JSON.parse(event.data);
 
-        // Session configured successfully
+        // 1. Session configured successfully
         if (data.class === "SessionResponse" && data.code === 200) {
           document.getElementById("sessionStatus").innerText = "Call Active (Genesys Connected)";
           document.getElementById("sessionStatus").className = "text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-mono";
@@ -188,19 +188,20 @@
           sendInboundCustomerMessage(initialMsg);
         }
 
-        // Outbound event from Genesys Agent/Flow
+        // 2. Outbound event from Genesys Agent/Flow
         if (data.class === "StructuredMessage" && data.body?.direction === "Outbound") {
-          // Extract text cleanly across root text or structured content objects
-          let replyText = data.body?.text;
+          let agentText = data.body?.text;
           
-          if (!replyText && Array.isArray(data.body?.content)) {
+          if (!agentText && Array.isArray(data.body?.content)) {
             const textObj = data.body.content.find(c => c.contentType === "Text");
-            if (textObj) replyText = textObj.text?.body || textObj.text;
+            if (textObj) agentText = textObj.text?.body || textObj.text;
           }
 
-          // Ignore duplicate echo frames or empty system events
-          if (replyText) {
-            logMessage("Genesys Flow / Agent", replyText);
+          if (agentText) {
+            logMessage("Genesys Flow / Agent", agentText);
+
+            // Automatically call Gemini to generate the customer's reply
+            await fetchAICustomerReply(agentText);
           }
         }
       };
@@ -214,6 +215,38 @@
         document.getElementById("sessionStatus").innerText = "Disconnected";
         document.getElementById("sessionStatus").className = "text-xs bg-[#283b54] text-slate-300 px-2.5 py-1 rounded-full font-mono";
       };
+    }
+
+    async function fetchAICustomerReply(latestAgentMessage) {
+      // Save transcript history snapshot BEFORE requesting new Gemini response
+      const historyBeforeReply = [...transcript];
+
+      try {
+        const res = await fetch(`${WORKER_URL}/api/generate-response`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemPrompt: document.getElementById("systemPrompt").value,
+            conversationHistory: historyBeforeReply.map(t => ({
+              role: (t.sender === "AI Customer") ? "assistant" : "user",
+              content: t.text
+            })),
+            latestAgentMessage: latestAgentMessage
+          })
+        });
+
+        const data = await res.json();
+        const nextCustomerText = data.reply || data.response;
+
+        if (nextCustomerText) {
+          // Send generated customer reply back to Genesys Cloud Web Messaging
+          sendInboundCustomerMessage(nextCustomerText);
+        } else if (data.error) {
+          console.error("Gemini Generation Error:", data.error);
+        }
+      } catch (err) {
+        console.error("Failed to fetch next AI customer turn:", err);
+      }
     }
 
     function sendInboundCustomerMessage(text) {
