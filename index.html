@@ -125,7 +125,6 @@
     loadPersonaPrompt();
 
     function logMessage(sender, text) {
-      // Avoid duplicate consecutive identical messages
       if (transcript.length > 0) {
         const last = transcript[transcript.length - 1];
         if (last.sender === sender && last.text === text) return;
@@ -225,8 +224,6 @@
       if (isWaitingForAi) return;
       isWaitingForAi = true;
 
-      // Exclude the current latestAgentMessage from conversationHistory array
-      // because worker.js manually appends latestAgentMessage at the end.
       const historyBeforeReply = transcript.filter(t => t.text !== latestAgentMessage);
 
       try {
@@ -286,56 +283,94 @@
     }
 
     async function endSimulation() {
-      if (socket) {
-        socket.close();
-      }
-
       if (transcript.length === 0) return;
 
-      document.getElementById("sessionStatus").innerText = "Evaluating...";
+      document.getElementById("sessionStatus").innerText = "Disconnecting & Evaluating...";
       document.getElementById("sessionStatus").className = "text-xs bg-amber-950 text-amber-300 border border-amber-800 px-2.5 py-1 rounded-full font-mono";
-      
+
+      // 1. Send Genesys disconnect payload over Web Messaging WebSocket
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        try {
+          const disconnectPayload = {
+            action: "disconnect",
+            token: sessionToken
+          };
+          socket.send(JSON.stringify(disconnectPayload));
+        } catch (e) {
+          console.warn("Could not send Genesys disconnect payload:", e);
+        }
+        
+        setTimeout(() => {
+          if (socket) socket.close();
+        }, 300);
+      }
+
+      // 2. Map transcript senders to standard labels for evaluation prompt
+      const formattedTranscript = transcript.map(t => ({
+        sender: (t.sender === "AI Customer") ? "Customer" : "Trainee Agent",
+        text: t.text
+      }));
+
+      // 3. Request QA scorecard from Worker API
       try {
         const res = await fetch(`${WORKER_URL}/api/evaluate-call`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript })
+          body: JSON.stringify({ transcript: formattedTranscript })
         });
 
-        const evalData = await res.json();
+        let evalData = await res.json();
+
+        if (!res.ok || evalData.error) {
+          throw new Error(evalData.error || `HTTP ${res.status}`);
+        }
         
         document.getElementById("sessionStatus").innerText = "Completed";
         document.getElementById("sessionStatus").className = "text-xs bg-[#283b54] text-slate-300 px-2.5 py-1 rounded-full font-mono";
+
+        let scores = evalData.scores || { empathy: 0, protocol: 0, resolution: 0 };
+        let summary = evalData.summary || "No summary available.";
+        let coachingTip = evalData.coaching_tip || evalData.coachingTip || "No coaching tip provided.";
+
+        if (typeof evalData === "string") {
+          try {
+            const parsed = JSON.parse(evalData);
+            scores = parsed.scores || scores;
+            summary = parsed.summary || summary;
+            coachingTip = parsed.coaching_tip || coachingTip;
+          } catch(e) {}
+        }
 
         document.getElementById("scorecardBox").innerHTML = `
           <div class="grid grid-cols-3 gap-2 text-center">
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">EMPATHY</span>
-              <span class="text-xl font-bold text-[#FF4F00]">${evalData.scores?.empathy || 0}/5</span>
+              <span class="text-xl font-bold text-[#FF4F00]">${scores.empathy || 0}/5</span>
             </div>
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">PROTOCOL</span>
-              <span class="text-xl font-bold text-emerald-400">${evalData.scores?.protocol || 0}/5</span>
+              <span class="text-xl font-bold text-emerald-400">${scores.protocol || 0}/5</span>
             </div>
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">RESOLUTION</span>
-              <span class="text-xl font-bold text-amber-400">${evalData.scores?.resolution || 0}/5</span>
+              <span class="text-xl font-bold text-amber-400">${scores.resolution || 0}/5</span>
             </div>
           </div>
 
           <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54] text-xs space-y-1">
             <span class="block font-semibold text-slate-200">Executive Summary:</span>
-            <p class="text-slate-400 leading-relaxed">${evalData.summary || "N/A"}</p>
+            <p class="text-slate-400 leading-relaxed">${summary}</p>
           </div>
 
           <div class="bg-[#FF4F00]/10 p-3 rounded-lg border border-[#FF4F00]/30 text-xs space-y-1">
             <span class="block font-semibold text-[#FF4F00]">Coaching Tip:</span>
-            <p class="text-orange-200 leading-relaxed">${evalData.coaching_tip || "N/A"}</p>
+            <p class="text-orange-200 leading-relaxed">${coachingTip}</p>
           </div>
         `;
       } catch (err) {
-        document.getElementById("sessionStatus").innerText = "Error";
-        document.getElementById("scorecardBox").innerHTML = `<p class="text-xs text-red-400">Failed to generate scorecard. Verify Cloudflare Worker connection.</p>`;
+        document.getElementById("sessionStatus").innerText = "Evaluation Error";
+        document.getElementById("sessionStatus").className = "text-xs bg-red-950 text-red-300 border border-red-800 px-2.5 py-1 rounded-full font-mono";
+        document.getElementById("scorecardBox").innerHTML = `<p class="text-xs text-red-400">Failed to generate scorecard: ${err.message}</p>`;
       }
     }
   </script>
