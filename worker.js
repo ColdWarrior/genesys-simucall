@@ -14,7 +14,7 @@ export default {
 	const pathname = url.pathname.replace(/\/+/g, "/"); // Normalizes "//api" to "/api"
 
     // Endpoint 1: Generate AI Customer Response
-    if (url.pathname === "/api/generate-response" && request.method === "POST") {
+    if (pathname === "/api/generate-response" && request.method === "POST") {
       try {
         const { systemPrompt, conversationHistory, latestAgentMessage } = await request.json();
 
@@ -52,7 +52,7 @@ export default {
     }
 
     // Endpoint 2: Generate QA Evaluation Scorecard (JSON Mode)
-    if (url.pathname === "/api/evaluate-call" && request.method === "POST") {
+    if (pathname === "/api/evaluate-call" && request.method === "POST") {
       try {
         const { transcript } = await request.json();
 
