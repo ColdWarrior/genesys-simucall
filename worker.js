@@ -10,19 +10,28 @@ export default {
       });
     }
 
+    const corsHeaders = {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    };
+
     const url = new URL(request.url);
-	const pathname = url.pathname.replace(/\/+/g, "/"); // Normalizes "//api" to "/api"
-	
-	if (pathname === "/favicon.ico") {
+    const pathname = url.pathname.replace(/\/+/g, "/");
+
+    if (pathname === "/favicon.ico") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
-	
-    // Endpoint 1: Generate AI Customer Response
+
+    // Route 1: Generate AI Customer Response
     if (pathname === "/api/generate-response" && request.method === "POST") {
       try {
+        if (!env.GEMINI_API_KEY) {
+          throw new Error("GEMINI_API_KEY secret environment variable is missing in Cloudflare Worker.");
+        }
+
         const { systemPrompt, conversationHistory, latestAgentMessage } = await request.json();
 
-        const contents = conversationHistory.map(msg => ({
+        const contents = (conversationHistory || []).map(msg => ({
           role: msg.role === "assistant" ? "model" : "user",
           parts: [{ text: msg.content }]
         }));
@@ -32,7 +41,7 @@ export default {
           parts: [{ text: `Agent: ${latestAgentMessage}` }]
         });
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
 
         const geminiResponse = await fetch(geminiUrl, {
           method: "POST",
@@ -45,19 +54,34 @@ export default {
         });
 
         const data = await geminiResponse.json();
-        const customerReply = data.candidates[0].content.parts[0].text;
+
+        if (!geminiResponse.ok) {
+          return new Response(JSON.stringify({ error: data.error?.message || "Gemini API request failed." }), {
+            status: geminiResponse.status,
+            headers: corsHeaders
+          });
+        }
+
+        const customerReply = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
 
         return new Response(JSON.stringify({ reply: customerReply }), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+          headers: corsHeaders
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: corsHeaders
+        });
       }
     }
 
-    // Endpoint 2: Generate QA Evaluation Scorecard (JSON Mode)
+    // Route 2: Generate QA Evaluation Scorecard
     if (pathname === "/api/evaluate-call" && request.method === "POST") {
       try {
+        if (!env.GEMINI_API_KEY) {
+          throw new Error("GEMINI_API_KEY secret environment variable is missing in Cloudflare Worker.");
+        }
+
         const { transcript } = await request.json();
 
         const evalPrompt = `
@@ -75,7 +99,7 @@ Return STRICT JSON matching this structure:
 }
 
 TRANSCRIPT:
-${transcript.map(t => `${t.sender}:${t.text}`).join("\n")}
+${(transcript || []).map(t => `${t.sender}:${t.text}`).join("\n")}
 `;
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
@@ -90,16 +114,30 @@ ${transcript.map(t => `${t.sender}:${t.text}`).join("\n")}
         });
 
         const evalData = await geminiResponse.json();
-        const scorecardJson = evalData.candidates[0].content.parts[0].text;
+
+        if (!geminiResponse.ok) {
+          return new Response(JSON.stringify({ error: evalData.error?.message || "Gemini API request failed." }), {
+            status: geminiResponse.status,
+            headers: corsHeaders
+          });
+        }
+
+        const scorecardJson = evalData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
         return new Response(scorecardJson, {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+          headers: corsHeaders
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: corsHeaders
+        });
       }
     }
 
-    return new Response("SimuCall AI Cloudflare Worker Active", { status: 200 });
+    return new Response("SimuCall AI Cloudflare Worker Active", {
+      status: 200,
+      headers: corsHeaders
+    });
   }
 };
