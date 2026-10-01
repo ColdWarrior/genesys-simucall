@@ -1,5 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
+    // 1. Handle CORS preflight options request
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -15,9 +16,11 @@ export default {
       "Access-Control-Allow-Origin": "*",
     };
 
+    // 2. Parse URL and normalize double slashes (e.g. //api -> /api)
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+/g, "/");
 
+    // 3. Silently handle browser favicon requests
     if (pathname === "/favicon.ico") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
@@ -26,20 +29,50 @@ export default {
     if (pathname === "/api/generate-response" && request.method === "POST") {
       try {
         if (!env.GEMINI_API_KEY) {
-          throw new Error("GEMINI_API_KEY secret environment variable is missing in Cloudflare Worker.");
+          return new Response(JSON.stringify({ error: "GEMINI_API_KEY secret environment variable is missing." }), {
+            status: 500,
+            headers: corsHeaders
+          });
         }
 
-        const { systemPrompt, conversationHistory, latestAgentMessage } = await request.json();
+        let body;
+        try {
+          body = await request.json();
+        } catch (e) {
+          return new Response(JSON.stringify({ error: "Invalid JSON body provided in request." }), {
+            status: 400,
+            headers: corsHeaders
+          });
+        }
 
-        const contents = (conversationHistory || []).map(msg => ({
-          role: msg.role === "assistant" ? "model" : "user",
-          parts: [{ text: msg.content }]
-        }));
+        const { systemPrompt = "", conversationHistory = [], latestAgentMessage = "" } = body;
 
+        // Construct Gemini contents payload
+        const contents = [];
+
+        // Map existing transcript history
+        if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+          conversationHistory.forEach(msg => {
+            contents.push({
+              role: msg.role === "assistant" ? "model" : "user",
+              parts: [{ text: msg.content || "" }]
+            });
+          });
+        }
+
+        // Add latest agent message
         contents.push({
           role: "user",
-          parts: [{ text: `Agent: ${latestAgentMessage}` }]
+          parts: [{ text: latestAgentMessage }]
         });
+
+        // Gemini REST API strictly requires contents to start with role: 'user'
+        if (contents.length > 0 && contents[0].role === "model") {
+          contents.unshift({
+            role: "user",
+            parts: [{ text: "Context: Customer service call initiated." }]
+          });
+        }
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
 
@@ -64,11 +97,12 @@ export default {
 
         const customerReply = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
 
-        return new Response(JSON.stringify({ reply: customerReply }), {
+        return new Response(JSON.stringify({ reply: customerReply, response: customerReply }), {
+          status: 200,
           headers: corsHeaders
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err.message || "Internal Worker Error" }), {
           status: 500,
           headers: corsHeaders
         });
@@ -79,10 +113,23 @@ export default {
     if (pathname === "/api/evaluate-call" && request.method === "POST") {
       try {
         if (!env.GEMINI_API_KEY) {
-          throw new Error("GEMINI_API_KEY secret environment variable is missing in Cloudflare Worker.");
+          return new Response(JSON.stringify({ error: "GEMINI_API_KEY secret environment variable is missing." }), {
+            status: 500,
+            headers: corsHeaders
+          });
         }
 
-        const { transcript } = await request.json();
+        let body;
+        try {
+          body = await request.json();
+        } catch (e) {
+          return new Response(JSON.stringify({ error: "Invalid JSON body provided in request." }), {
+            status: 400,
+            headers: corsHeaders
+          });
+        }
+
+        const { transcript = [] } = body;
 
         const evalPrompt = `
 Analyze the following contact center chat transcript between a Trainee Agent and a Customer.
@@ -125,16 +172,18 @@ ${(transcript || []).map(t => `${t.sender}:${t.text}`).join("\n")}
         const scorecardJson = evalData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
         return new Response(scorecardJson, {
+          status: 200,
           headers: corsHeaders
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err.message || "Internal Worker Error" }), {
           status: 500,
           headers: corsHeaders
         });
       }
     }
 
+    // Fallback health check
     return new Response("SimuCall AI Cloudflare Worker Active", {
       status: 200,
       headers: corsHeaders

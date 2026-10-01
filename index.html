@@ -83,7 +83,6 @@
   </div>
 
   <script>
-    // REPLACE THIS WITH YOUR CLOUDFLARE WORKER URL
     const WORKER_URL = "https://simucall-api.abundo.dev";
     
     const personas = {
@@ -111,7 +110,6 @@
       const msgElem = document.createElement("div");
       const isCustomer = sender === "AI Customer";
       
-      // AI Customer gets Genesys Orange accent background, Agent gets Dark Slate
       msgElem.className = `p-2.5 rounded-lg max-w-[85%] ${isCustomer ? 'bg-[#FF4F00]/15 border border-[#FF4F00]/40 text-orange-100 self-start' : 'bg-[#283b54] text-slate-100 self-end ml-auto'}`;
       msgElem.innerHTML = `<span class="block text-[10px] font-bold ${isCustomer ? 'text-[#FF4F00]' : 'text-slate-400'} mb-0.5">${sender}</span>${text}`;
       box.appendChild(msgElem);
@@ -138,7 +136,7 @@
       const text = input.value.trim();
       if (!text || transcript.length === 0) return;
       
-      // Save current transcript history BEFORE adding the new agent message
+      // Save transcript history snapshot BEFORE adding current agent message
       const historyBeforeReply = [...transcript];
 
       logMessage("Trainee Agent", text);
@@ -159,10 +157,10 @@
         });
 
         const data = await res.json();
-        if (data.reply) {
-          logMessage("AI Customer", data.reply);
+        if (data.reply || data.response) {
+          logMessage("AI Customer", data.reply || data.response);
         } else if (data.error) {
-          logMessage("AI Customer", `[Error]: ${data.error}`);
+          logMessage("AI Customer", `[API Error]: ${data.error}`);
         } else {
           logMessage("AI Customer", "I didn't understand that response.");
         }
@@ -193,26 +191,26 @@
           <div class="grid grid-cols-3 gap-2 text-center">
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">EMPATHY</span>
-              <span class="text-xl font-bold text-[#FF4F00]">${evalData.scores.empathy}/5</span>
+              <span class="text-xl font-bold text-[#FF4F00]">${evalData.scores?.empathy || 0}/5</span>
             </div>
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">PROTOCOL</span>
-              <span class="text-xl font-bold text-emerald-400">${evalData.scores.protocol}/5</span>
+              <span class="text-xl font-bold text-emerald-400">${evalData.scores?.protocol || 0}/5</span>
             </div>
             <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54]">
               <span class="block text-[10px] text-slate-400 font-mono">RESOLUTION</span>
-              <span class="text-xl font-bold text-amber-400">${evalData.scores.resolution}/5</span>
+              <span class="text-xl font-bold text-amber-400">${evalData.scores?.resolution || 0}/5</span>
             </div>
           </div>
 
           <div class="bg-[#0d1424] p-3 rounded-lg border border-[#283b54] text-xs space-y-1">
             <span class="block font-semibold text-slate-200">Executive Summary:</span>
-            <p class="text-slate-400 leading-relaxed">${evalData.summary}</p>
+            <p class="text-slate-400 leading-relaxed">${evalData.summary || "N/A"}</p>
           </div>
 
           <div class="bg-[#FF4F00]/10 p-3 rounded-lg border border-[#FF4F00]/30 text-xs space-y-1">
             <span class="block font-semibold text-[#FF4F00]">Coaching Tip:</span>
-            <p class="text-orange-200 leading-relaxed">${evalData.coaching_tip}</p>
+            <p class="text-orange-200 leading-relaxed">${evalData.coaching_tip || "N/A"}</p>
           </div>
         `;
       } catch (err) {
