@@ -116,6 +116,7 @@
     let transcript = [];
     let socket = null;
     let sessionToken = null;
+    let isWaitingForAi = false;
 
     function loadPersonaPrompt() {
       const selected = document.getElementById("personaSelect").value;
@@ -124,6 +125,12 @@
     loadPersonaPrompt();
 
     function logMessage(sender, text) {
+      // Avoid duplicate consecutive identical messages
+      if (transcript.length > 0) {
+        const last = transcript[transcript.length - 1];
+        if (last.sender === sender && last.text === text) return;
+      }
+
       transcript.push({ sender, text });
       const box = document.getElementById("transcriptBox");
       
@@ -132,8 +139,6 @@
       }
 
       const msgElem = document.createElement("div");
-      
-      // ONLY AI Customer gets left-aligned orange styling. Agents/Flows get right-aligned dark slate styling.
       const isCustomer = sender === "AI Customer";
       
       msgElem.className = `p-2.5 rounded-lg max-w-[85%] ${isCustomer ? 'bg-[#FF4F00]/15 border border-[#FF4F00]/40 text-orange-100 self-start' : 'bg-[#283b54] text-slate-100 self-end ml-auto'}`;
@@ -145,6 +150,7 @@
     async function startSimulation() {
       document.getElementById("transcriptBox").innerHTML = "";
       transcript = [];
+      isWaitingForAi = false;
 
       const deploymentId = document.getElementById("genesysDeploymentId").value.trim();
       const regionDomain = document.getElementById("genesysRegion").value;
@@ -197,10 +203,8 @@
             if (textObj) agentText = textObj.text?.body || textObj.text;
           }
 
-          if (agentText) {
+          if (agentText && !isWaitingForAi) {
             logMessage("Genesys Flow / Agent", agentText);
-
-            // Automatically call Gemini to generate the customer's reply
             await fetchAICustomerReply(agentText);
           }
         }
@@ -218,8 +222,12 @@
     }
 
     async function fetchAICustomerReply(latestAgentMessage) {
-      // Save transcript history snapshot BEFORE requesting new Gemini response
-      const historyBeforeReply = [...transcript];
+      if (isWaitingForAi) return;
+      isWaitingForAi = true;
+
+      // Exclude the current latestAgentMessage from conversationHistory array
+      // because worker.js manually appends latestAgentMessage at the end.
+      const historyBeforeReply = transcript.filter(t => t.text !== latestAgentMessage);
 
       try {
         const res = await fetch(`${WORKER_URL}/api/generate-response`, {
@@ -239,13 +247,14 @@
         const nextCustomerText = data.reply || data.response;
 
         if (nextCustomerText) {
-          // Send generated customer reply back to Genesys Cloud Web Messaging
           sendInboundCustomerMessage(nextCustomerText);
         } else if (data.error) {
           console.error("Gemini Generation Error:", data.error);
         }
       } catch (err) {
         console.error("Failed to fetch next AI customer turn:", err);
+      } finally {
+        isWaitingForAi = false;
       }
     }
 
@@ -271,7 +280,8 @@
       const text = input.value.trim();
       if (!text) return;
 
-      sendInboundCustomerMessage(text);
+      logMessage("Genesys Flow / Agent", text);
+      fetchAICustomerReply(text);
       input.value = "";
     }
 
